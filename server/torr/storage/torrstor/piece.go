@@ -1,6 +1,9 @@
 package torrstor
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -90,6 +93,12 @@ func (p *Piece) ReadAt(b []byte, off int64) (n int, err error) {
 
 func (p *Piece) MarkComplete() error {
 	p.Complete.Store(true)
+
+	// Persist completed index pieces to disk
+	if p.cache != nil && p.Id < len(p.cache.isIndexPiece) && p.cache.isIndexPiece[p.Id] {
+		go p.saveIndexPieceToDisk()
+	}
+
 	return nil
 }
 
@@ -175,6 +184,11 @@ func (p *Piece) Completion() storage.Completion {
 }
 
 func (p *Piece) Release() {
+	// Never evict index pieces while cache is active
+	if p.cache != nil && !p.cache.isClosed.Load() && p.Id < len(p.cache.isIndexPiece) && p.cache.isIndexPiece[p.Id] {
+		return
+	}
+
 	p.mPiece.Release()
 	p.cache.muReaders.RLock()
 	closed := p.cache.isClosed.Load()
@@ -183,5 +197,36 @@ func (p *Piece) Release() {
 	if !closed && torr != nil {
 		torr.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
 		torr.Piece(p.Id).UpdateCompletion()
+	}
+}
+
+func (p *Piece) saveIndexPieceToDisk() {
+	if settings.Path == "" || p.cache == nil {
+		return
+	}
+
+	p.mPiece.mu.RLock()
+	if p.mPiece.buffer == nil {
+		p.mPiece.mu.RUnlock()
+		return
+	}
+	sz := atomic.LoadInt64(&p.Size)
+	if sz <= 0 || sz > int64(len(p.mPiece.buffer)) {
+		sz = int64(len(p.mPiece.buffer))
+	}
+	data := make([]byte, sz)
+	copy(data, p.mPiece.buffer[:sz])
+	p.mPiece.mu.RUnlock()
+
+	hashHex := p.cache.hash.HexString()
+	dir := filepath.Join(settings.Path, "index_cache", hashHex)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+
+	filePath := filepath.Join(dir, fmt.Sprintf("piece_%d.bin", p.Id))
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err == nil {
+		_ = os.Rename(tmpPath, filePath)
 	}
 }

@@ -1,6 +1,7 @@
 package torrstor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -81,6 +82,10 @@ type Cache struct {
 	// V305: Bitmap for O(1) piece-in-range check during eviction.
 	// Replaces O(N*R) inRanges() scan with O(N) array lookup.
 	pieceInRange []bool
+
+	// Selective Index & Cues Cache: Bitmap of head (0..8MB) and tail (last 8MB)
+	// pieces across all media files in the torrent, protected from eviction.
+	isIndexPiece []bool
 
 	// free holds spare piece buffers for reuse inside this cache only. A cache's piece length
 	// never changes, so a buffer taken from here always fits - and unlike sync.Pool the
@@ -165,8 +170,88 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	}
 
 	c.pieceInRange = make([]bool, c.pieceCount)
+	c.isIndexPiece = make([]bool, c.pieceCount)
+
+	// Keep 8MB head and tail for container headers and seek cues
+	fileRangeNotDelete := int64(c.pieceLength)
+	if fileRangeNotDelete < 8<<20 {
+		fileRangeNotDelete = 8 << 20
+	}
+
+	var curOffset int64
+	for _, fi := range info.UpvertedFiles() {
+		fileLength := fi.Length
+		fileStart := curOffset
+		fileEnd := curOffset + fileLength
+		curOffset += fileLength
+
+		if fileLength < 10<<20 {
+			continue
+		}
+
+		ss := int(fileStart / c.pieceLength)
+		se := int((fileStart + fileRangeNotDelete) / c.pieceLength)
+		if se >= c.pieceCount {
+			se = c.pieceCount - 1
+		}
+
+		es := int((fileEnd - fileRangeNotDelete) / c.pieceLength)
+		if es < 0 {
+			es = 0
+		}
+		ee := int((fileEnd - 1) / c.pieceLength)
+		if ee >= c.pieceCount {
+			ee = c.pieceCount - 1
+		}
+
+		for p := ss; p <= se && p < c.pieceCount; p++ {
+			c.isIndexPiece[p] = true
+		}
+		for p := es; p <= ee && p < c.pieceCount; p++ {
+			c.isIndexPiece[p] = true
+		}
+	}
+
 	for i := 0; i < c.pieceCount; i++ {
 		c.pieces[i] = NewPiece(i, c)
+	}
+
+	c.preloadIndexCache()
+}
+
+func (c *Cache) preloadIndexCache() {
+	if settings.Path == "" {
+		return
+	}
+	cacheDir := filepath.Join(settings.Path, "index_cache", c.hash.HexString())
+	if _, err := os.Stat(cacheDir); err != nil {
+		return
+	}
+
+	preloaded := 0
+	var preloadedBytes int64
+
+	for id := 0; id < c.pieceCount; id++ {
+		if !c.isIndexPiece[id] {
+			continue
+		}
+		piecePath := filepath.Join(cacheDir, fmt.Sprintf("piece_%d.bin", id))
+		data, err := os.ReadFile(piecePath)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		p := c.pieces[id]
+		_, _ = p.mPiece.WriteAt(data, 0)
+		p.Complete.Store(true)
+		atomic.StoreInt64(&p.Size, int64(len(data)))
+		preloadedBytes += int64(len(data))
+		preloaded++
+	}
+
+	if preloaded > 0 {
+		atomic.AddInt64(&c.filled, preloadedBytes)
+		log.TLogln(fmt.Sprintf("[IndexCache] Preloaded %d index pieces (%.2f MB) from disk for %s",
+			preloaded, float64(preloadedBytes)/(1024*1024), c.hash.HexString()))
 	}
 }
 
@@ -174,6 +259,24 @@ func (c *Cache) SetTorrent(torr *torrent.Torrent) {
 	c.muReaders.Lock()
 	c.torrent = torr
 	c.muReaders.Unlock()
+
+	// Proactively prioritize incomplete index pieces (container headers & Cues)
+	if torr != nil {
+		batch := make(map[int]torrenttypes.PiecePriority)
+		for id := 0; id < c.pieceCount; id++ {
+			if id < len(c.isIndexPiece) && c.isIndexPiece[id] {
+				if c.pieces[id].Complete.Load() {
+					torr.Piece(id).UpdateCompletion()
+				} else {
+					batch[id] = torrent.PiecePriorityHigh
+				}
+			}
+		}
+		if len(batch) > 0 {
+			torr.SetPiecePriorities(batch)
+			log.TLogln(fmt.Sprintf("[IndexCache] Prioritized %d incomplete index pieces for %s", len(batch), c.hash.HexString()))
+		}
+	}
 }
 
 func (c *Cache) SetAggressive(enabled bool, masterLimit int) {
@@ -236,6 +339,12 @@ func (c *Cache) Close() error {
 		name := filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString())
 		if name != "" && name != "/" {
 			os.Remove(name)
+		}
+		if settings.Path != "" {
+			indexDir := filepath.Join(settings.Path, "index_cache", c.hash.HexString())
+			if indexDir != "" && indexDir != "/" {
+				_ = os.RemoveAll(indexDir)
+			}
 		}
 	}
 
@@ -546,6 +655,11 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 }
 
 func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {
+	// Protect all container headers and cues pieces across the entire torrent
+	if id < len(c.isIndexPiece) && c.isIndexPiece[id] {
+		return true
+	}
+
 	// keep 8/16 MB
 	FileRangeNotDelete := int64(c.pieceLength)
 	if FileRangeNotDelete < 8<<20 {
@@ -634,6 +748,10 @@ func (c *Cache) clearPriority() {
 	c.muPriority.Lock()
 	for id := range c.localPriority {
 		if len(ranges) == 0 || !inRanges(ranges, id) {
+			// Do not clear priority on index pieces that are still downloading
+			if id < len(c.isIndexPiece) && c.isIndexPiece[id] && !c.pieces[id].Complete.Load() {
+				continue
+			}
 			c.torrent.Piece(id).SetPriority(torrent.PiecePriorityNone)
 			delete(c.localPriority, id)
 		}
