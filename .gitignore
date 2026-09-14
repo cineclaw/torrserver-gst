@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+
+# Binaries
+torrserver
+torrserver-bin
+torrserver-linux-*
+torrserver-darwin-*
+
+# Logs
+*.log
