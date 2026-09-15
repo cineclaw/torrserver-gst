@@ -448,7 +448,7 @@ func (r *gstRunner) createPipelineArgs() string {
 	sb.WriteString("souphttpsrc ")
 	sb.WriteString("location=\"")
 	sb.WriteString(r.task.SourceURL)
-	sb.WriteString("\" is-live=false keep-alive=true timeout=60 retries=5 ")
+	sb.WriteString("\" is-live=false keep-alive=true timeout=60 retries=10 ")
 	if gstVersion.atLeast(1, 26) {
 		sb.WriteString("retry-backoff-factor=0.5 retry-backoff-max=10 ")
 	}
@@ -457,7 +457,7 @@ func (r *gstRunner) createPipelineArgs() string {
 	} else {
 		sb.WriteString(" ! matroskademux name=d ")
 	}
-	sb.WriteString("multiqueue name=mq use-buffering=false max-size-buffers=5 max-size-bytes=0 max-size-time=0 ")
+	sb.WriteString("multiqueue name=mq use-buffering=false max-size-buffers=0 max-size-bytes=67108864 max-size-time=10000000000 ")
 
 	sb.WriteString("d.video_0 ! mq.sink_0 ")
 
@@ -554,7 +554,7 @@ func (r *gstRunner) writeSubtitleBranches(sb *strings.Builder, gstVersion gstVer
 }
 
 func (r *gstRunner) writeAppSink(sb *strings.Builder, gstVersion gstVersionInfo) {
-	sb.WriteString(" streamable=true ! appsink name=out emit-signals=false sync=false max-buffers=1")
+	sb.WriteString(" streamable=true ! appsink name=out emit-signals=false sync=false max-buffers=8")
 	if gstVersion.atLeast(1, 28) {
 		sb.WriteString(" leaky-type=none")
 	} else {

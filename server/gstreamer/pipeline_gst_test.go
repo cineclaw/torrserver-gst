@@ -17,7 +17,7 @@ import (
 	"unsafe"
 )
 
-func TestCreatePipelineArgsUsesSingleBufferAppSink(t *testing.T) {
+func TestCreatePipelineArgsUsesAppSink(t *testing.T) {
 	runner := &gstRunner{
 		task: &Task{
 			SourceURL: "http://127.0.0.1/video",
@@ -37,7 +37,7 @@ func TestCreatePipelineArgsUsesSingleBufferAppSink(t *testing.T) {
 	}
 
 	args := runner.createPipelineArgs()
-	want := "appsink name=out emit-signals=false sync=false max-buffers=1"
+	want := "appsink name=out emit-signals=false sync=false max-buffers=8"
 	if !strings.Contains(args, want) {
 		t.Fatalf("createPipelineArgs() appsink =\n%s\nwant %q", args, want)
 	}
@@ -52,7 +52,8 @@ func TestCreatePipelineArgsUsesMultiqueueWithoutBranchQueueLimits(t *testing.T) 
 	args := newVersionedVideoPipelineRunner(1.28).createPipelineArgs()
 
 	for _, want := range []string{
-		"multiqueue name=mq use-buffering=false max-size-buffers=5",
+		"multiqueue name=mq use-buffering=false",
+		"max-size-bytes=67108864",
 		"d.video_0 ! mq.sink_0",
 		"mq.src_0 ! h264parse",
 	} {
@@ -164,14 +165,14 @@ func TestCreatePipelineArgsConfigOverridesProbeAudioCaps(t *testing.T) {
 	}
 }
 
-func TestCreatePipelineArgsMultiqueueUsesFixedLimits(t *testing.T) {
+func TestCreatePipelineArgsMultiqueueUsesElasticLimits(t *testing.T) {
 	clearGStreamerRuntimeVersion(t)
 
 	runner := newVersionedVideoPipelineRunner(1.28)
 	runner.task.Config.SegmentSeconds = 7
 
 	args := runner.createPipelineArgs()
-	want := "multiqueue name=mq use-buffering=false max-size-buffers=5 max-size-bytes=0 max-size-time=0"
+	want := "multiqueue name=mq use-buffering=false max-size-buffers=0 max-size-bytes=67108864 max-size-time=10000000000"
 	if !strings.Contains(args, want) {
 		t.Fatalf("createPipelineArgs() =\n%s\nwant %q", args, want)
 	}
@@ -184,8 +185,8 @@ func TestCreatePipelineArgsMultiqueueUsesFixedLimits(t *testing.T) {
 		t.Fatalf("createPipelineArgs() missing multiqueue:\n%s", args)
 	}
 	mqArgs := args[mqStart:mqEnd]
-	if !strings.Contains(mqArgs, "max-size-bytes=0") || !strings.Contains(mqArgs, "max-size-time=0") {
-		t.Fatalf("multiqueue must explicitly disable byte/time limits:\n%s", mqArgs)
+	if !strings.Contains(mqArgs, "max-size-bytes=67108864") || !strings.Contains(mqArgs, "max-size-time=10000000000") {
+		t.Fatalf("multiqueue must use elastic byte/time limits:\n%s", mqArgs)
 	}
 }
 
@@ -197,8 +198,8 @@ func TestCreatePipelineArgsGStreamer122OmitsNewerProperties(t *testing.T) {
 	if strings.Contains(args, " retry-backoff-factor=") || strings.Contains(args, " retry-backoff-max=") {
 		t.Fatalf("GStreamer 1.22 pipeline must not contain 1.26 souphttpsrc retry-backoff properties:\n%s", args)
 	}
-	if !strings.Contains(args, " max-buffers=1") {
-		t.Fatalf("GStreamer 1.22 pipeline must use one appsink buffer:\n%s", args)
+	if !strings.Contains(args, " max-buffers=8") {
+		t.Fatalf("GStreamer 1.22 pipeline must use eight appsink buffers:\n%s", args)
 	}
 	if strings.Contains(args, " leaky-type=") {
 		t.Fatalf("GStreamer 1.22 pipeline must not contain 1.28 appsink leaky-type property:\n%s", args)
@@ -208,7 +209,7 @@ func TestCreatePipelineArgsGStreamer122OmitsNewerProperties(t *testing.T) {
 	}
 }
 
-func TestCreatePipelineArgsGStreamer124UsesSingleAppSinkBuffer(t *testing.T) {
+func TestCreatePipelineArgsGStreamer124UsesAppSinkBuffer(t *testing.T) {
 	clearGStreamerRuntimeVersion(t)
 
 	args := newVersionedVideoPipelineRunner(1.24).createPipelineArgs()
@@ -216,8 +217,8 @@ func TestCreatePipelineArgsGStreamer124UsesSingleAppSinkBuffer(t *testing.T) {
 	if strings.Contains(args, " retry-backoff-factor=") || strings.Contains(args, " retry-backoff-max=") {
 		t.Fatalf("GStreamer 1.24 pipeline must not contain 1.26 retry-backoff properties:\n%s", args)
 	}
-	if !strings.Contains(args, "max-buffers=1") || strings.Contains(args, "max-bytes=") {
-		t.Fatalf("GStreamer 1.24 pipeline must use one appsink buffer without byte limit:\n%s", args)
+	if !strings.Contains(args, "max-buffers=8") || strings.Contains(args, "max-bytes=") {
+		t.Fatalf("GStreamer 1.24 pipeline must use eight appsink buffers without byte limit:\n%s", args)
 	}
 	if !strings.Contains(args, " drop=false") {
 		t.Fatalf("GStreamer 1.24 pipeline must use drop=false fallback before 1.28:\n%s", args)
@@ -230,8 +231,8 @@ func TestCreatePipelineArgsAppSinkOmitsByteLimit(t *testing.T) {
 	runner := newVersionedVideoPipelineRunner(1.28)
 	args := runner.createPipelineArgs()
 
-	if !strings.Contains(args, " max-buffers=1") {
-		t.Fatalf("pipeline must use max-buffers=1:\n%s", args)
+	if !strings.Contains(args, " max-buffers=8") {
+		t.Fatalf("pipeline must use max-buffers=8:\n%s", args)
 	}
 	if strings.Contains(args, " max-bytes=") || strings.Contains(args, " max-time=") {
 		t.Fatalf("appsink must not use byte/time limits:\n%s", args)
@@ -249,8 +250,8 @@ func TestCreatePipelineArgsGStreamer126UsesSoupRetryBackoff(t *testing.T) {
 	if !strings.Contains(args, " retry-backoff-factor=0.5 retry-backoff-max=10") {
 		t.Fatalf("GStreamer 1.26+ pipeline must contain souphttpsrc retry-backoff properties:\n%s", args)
 	}
-	if !strings.Contains(args, "max-buffers=1") || strings.Contains(args, "max-bytes=") {
-		t.Fatalf("GStreamer 1.26 pipeline must use one appsink buffer without byte limit:\n%s", args)
+	if !strings.Contains(args, "max-buffers=8") || strings.Contains(args, "max-bytes=") {
+		t.Fatalf("GStreamer 1.26 pipeline must use eight appsink buffers without byte limit:\n%s", args)
 	}
 	if !strings.Contains(args, " drop=false") {
 		t.Fatalf("GStreamer 1.26 pipeline must use drop=false fallback before 1.28:\n%s", args)
@@ -262,8 +263,8 @@ func TestCreatePipelineArgsGStreamer128UsesAppSinkLeakyType(t *testing.T) {
 
 	args := newVersionedVideoPipelineRunner(1.28).createPipelineArgs()
 
-	if !strings.Contains(args, "max-buffers=1") || strings.Contains(args, "max-bytes=") {
-		t.Fatalf("GStreamer 1.28 pipeline must use one appsink buffer without byte limit:\n%s", args)
+	if !strings.Contains(args, "max-buffers=8") || strings.Contains(args, "max-bytes=") {
+		t.Fatalf("GStreamer 1.28 pipeline must use eight appsink buffers without byte limit:\n%s", args)
 	}
 	if !strings.Contains(args, " leaky-type=none") {
 		t.Fatalf("GStreamer 1.28+ pipeline must use appsink leaky-type:\n%s", args)
@@ -285,8 +286,8 @@ func TestCreatePipelineArgsUsesRuntimeVersionWhenAvailable(t *testing.T) {
 	if strings.Contains(args, " max-bytes=") || strings.Contains(args, " max-time=") || strings.Contains(args, " leaky-type=none") {
 		t.Fatalf("runtime GStreamer 1.22 version must override config feature gates:\n%s", args)
 	}
-	if !strings.Contains(args, " max-buffers=1") {
-		t.Fatalf("runtime GStreamer 1.22 pipeline must use one appsink buffer:\n%s", args)
+	if !strings.Contains(args, " max-buffers=8") {
+		t.Fatalf("runtime GStreamer 1.22 pipeline must use eight appsink buffers:\n%s", args)
 	}
 	if !strings.Contains(args, " drop=false") {
 		t.Fatalf("runtime GStreamer 1.22 pipeline must use drop=false fallback:\n%s", args)
