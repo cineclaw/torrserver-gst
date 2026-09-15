@@ -139,7 +139,9 @@ func (bt *BTServer) SetIPBlocklist(list iplist.Ranger) {
 func (bt *BTServer) Connect() error {
 	bt.mu.Lock()
 	var err error
-	bt.configure(context.TODO())
+	ipCtx, ipCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	bt.configure(ipCtx)
+	ipCancel()
 	bt.client, err = torrent.NewClient(bt.config)
 	bt.torrents = make(map[metainfo.Hash]*Torrent)
 	bt.tickerStop = make(chan struct{})
