@@ -237,8 +237,11 @@ func loadBTSets() {
 	if len(buf) > 0 {
 		err := json.Unmarshal(buf, &BTsets)
 		if err == nil {
-			if BTsets.ReaderReadAHead < 5 {
-				BTsets.ReaderReadAHead = 5
+			if BTsets.ReaderReadAHead < 90 {
+				BTsets.ReaderReadAHead = 95
+			}
+			if BTsets.PreloadCache < 30 {
+				BTsets.PreloadCache = 50
 			}
 			// Enforce Turbo defaults for existing configs
 			if !BTsets.ResponsiveMode {
@@ -247,8 +250,8 @@ func loadBTSets() {
 			if !BTsets.AggressivePeerManagement {
 				BTsets.AggressivePeerManagement = true
 			}
-			if BTsets.ConnectionsLimit < 80 {
-				BTsets.ConnectionsLimit = 80
+			if BTsets.ConnectionsLimit < 100 {
+				BTsets.ConnectionsLimit = 100
 			}
 			// Set default TMDB settings if missing (for existing configs)
 			if BTsets.TMDBSettings.APIURL == "" {
