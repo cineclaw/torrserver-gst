@@ -149,8 +149,8 @@ func SetBTSets(sets *BTSets) {
 	}
 	sets.ResponsiveMode = true
 	sets.AggressivePeerManagement = true
-	if sets.TorrentDisconnectTimeout == 0 {
-		sets.TorrentDisconnectTimeout = 30
+	if sets.TorrentDisconnectTimeout < 300 {
+		sets.TorrentDisconnectTimeout = 900
 	}
 
 	if sets.ReaderReadAHead < 5 {
@@ -207,7 +207,7 @@ func SetDefaultConfig() {
 	sets.RetrackersMode = 1
 	sets.TrackersListURL = ""
 	sets.DefaultTrackers = DefaultTrackersText
-	sets.TorrentDisconnectTimeout = 30
+	sets.TorrentDisconnectTimeout = 900
 	sets.ReaderReadAHead = 95 // 95%
 	sets.ShowFSActiveTorr = true
 	sets.StoreSettingsInJson = true
@@ -252,6 +252,9 @@ func loadBTSets() {
 			}
 			if BTsets.ConnectionsLimit < 100 {
 				BTsets.ConnectionsLimit = 100
+			}
+			if BTsets.TorrentDisconnectTimeout < 300 {
+				BTsets.TorrentDisconnectTimeout = 900
 			}
 			// Set default TMDB settings if missing (for existing configs)
 			if BTsets.TMDBSettings.APIURL == "" {
